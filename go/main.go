@@ -29,7 +29,9 @@ import (
 
 const (
 	confName  = ".tunnel.conf" // 0.02 §4：隧道列表（隐藏文件、5 列）
-	tickSec   = 5             // 0.01 §5.4：TUI 不按键则每 5 秒重绘
+	pidName   = ".sshtp.pid"   // 0.02 §4：运行时 pid 记录（两个实现共用）
+	logName   = ".sshtp.log"   // 0.02 §4：日志（两个实现共用）
+	tickSec   = 5              // 0.01 §5.4：TUI 不按键则每 5 秒重绘
 	keyWindow = 3 * time.Second
 )
 
@@ -127,13 +129,70 @@ func writeConf(lines []string) error {
 
 // ---------- 两个视图（纯输出，TUI 与 CLI 共用同一份） ----------
 
-// showStatus 打印状态表。TODO：扫描尚未实现，暂只打印表头与占位提示。
+// pidPath 返回 pid 记录文件路径（与本程序同目录、扁平）。
+func pidPath() string { return filepath.Join(filepath.Dir(confPath()), pidName) }
+
+// isManaged 判断某 pid 是不是本程序起的（0.01 §10.20：pid 文件的唯一用途就是这一列）。
+func isManaged(pid int) bool {
+	b, err := os.ReadFile(pidPath())
+	if err != nil {
+		return false
+	}
+	want := strconv.Itoa(pid)
+	for _, line := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// confPortDesc 返回「本地端口 → 说明」映射，供状态表按端口 join 说明（0.01 §10.16）。
+func confPortDesc() map[string]string {
+	res := map[string]string{}
+	rows, _ := listConf()
+	for _, r := range rows {
+		t, ok := parseLine(r.Raw)
+		if !ok {
+			continue
+		}
+		_, port := splitAddr(t.Local)
+		res[port] = t.Desc
+	}
+	return res
+}
+
+// showStatus 打印状态表（0.01 §5.2 的 9 列 + 0.02 §2.1 的方向列）。
 func showStatus() {
 	fmt.Printf("================ sshtp ================\n")
 	fmt.Printf("编号 | 方向 | 本地ip:端口 | 转发目标 | SSH主机 | 持续时间 | 通讯量 | 来源 | PID | 说明\n")
-	// TODO(0.01 §5.2 / 0.02 §2)：扫描全机 ssh 隧道（lsof+ps 的 Go 等价实现），
-	// 按 pid 升序编号，join 说明与通讯量；三道数据源互相独立，拿不到记 "-"。
-	fmt.Printf("（扫描尚未实现：Go 版骨架阶段）\n")
+
+	ls, err := scanTunnels()
+	if err != nil {
+		// 扫描失败必须报出来。绝不能印成空表 —— 那会被误读成「确实没有隧道」（0.01 §10.6）
+		fmt.Printf("（扫描失败：%v）\n", err)
+		fmt.Printf("\n")
+		return
+	}
+
+	desc := confPortDesc()
+	for i, t := range ls {
+		src := "外部"
+		if isManaged(t.PID) {
+			src = "本程序"
+		}
+		d := "-"
+		if _, port := splitAddr(t.Local); desc[port] != "" {
+			d = desc[port]
+		}
+		// TODO(0.01 §10.14 / §8)：通讯量列。macOS 走 nettop（收发合计 ÷ 2），
+		// Linux / Windows 无等价数据源，一律记 "-"。
+		fmt.Printf("%d | %s | %s | %s | %s | %s | %s | %s | %d | %s\n",
+			i+1, t.Dir, t.Local, t.Rem, t.Host, t.Etime, "-", src, t.PID, d)
+	}
+	if len(ls) == 0 {
+		fmt.Printf("（没有检测到隧道）\n")
+	}
 	fmt.Printf("\n")
 }
 
