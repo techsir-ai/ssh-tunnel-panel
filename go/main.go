@@ -31,8 +31,11 @@ const (
 	confName  = ".tunnel.conf" // 0.02 §4：隧道列表（隐藏文件、5 列）
 	pidName   = ".sshtp.pid"   // 0.02 §4：运行时 pid 记录（两个实现共用）
 	logName   = ".sshtp.log"   // 0.02 §4：日志（两个实现共用）
-	tickSec   = 5              // 0.01 §5.4：TUI 不按键则每 5 秒重绘
-	keyWindow = 3 * time.Second
+	tickSec = 5 // 0.01 §5.4：TUI 不按键则每 5 秒重绘
+
+	// keyWindow 无参数运行时的按键窗口。0.01 §5.1 原文是 3 秒，
+	// 老板 2026-10-15 实机试用后定为 5 秒（3 秒太短，来不及按键）。
+	keyWindow = 5 * time.Second
 )
 
 // ---------- core：配置模型 ----------
@@ -242,9 +245,9 @@ func printKeys() {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "用法（键位与 TUI 菜单一致）：\n")
-	fmt.Fprintf(os.Stderr, "  sshtp          状态 + 键位与参数形状；3 秒内按任意键进 TUI 菜单，否则退出\n")
+	fmt.Fprintf(os.Stderr, "  sshtp          状态 + 键位与参数形状；5 秒内按任意键进 TUI 菜单，否则退出\n")
 	fmt.Fprintf(os.Stderr, "  sshtp v        查看配置\n")
-	fmt.Fprintf(os.Stderr, "  sshtp n <说明> <本地ip:端口> <远程ip:端口> <user@host>\n")
+	fmt.Fprintf(os.Stderr, "  sshtp n [L|R] <说明> <本地ip:端口> <远程ip:端口> <user@host>   （方向省略 = L）\n")
 	fmt.Fprintf(os.Stderr, "  sshtp e <编号> <字段> <新值>\n")
 	fmt.Fprintf(os.Stderr, "  sshtp x <编号>\n")
 	fmt.Fprintf(os.Stderr, "  sshtp c <编号>\n")
@@ -288,47 +291,47 @@ func main() {
 	}
 }
 
-// noArgs 无参数入口：打印状态 + 键位表，然后开 3 秒按键窗口（0.01 §5.1）。
+// noArgs 无参数入口：打印状态 + 键位表，然后开按键窗口（0.01 §5.1）。
+//
+//	窗口内按任意键 → 进 TUI 菜单（该键直接生效，不必再按一次）
+//	窗口内无输入   → 退出（状态与键位表已打印完毕）
+//
+// stdin 不是终端时（管道 / </dev/null），读取会立即返回 EOF，不会白等窗口时间。
 func noArgs() {
 	showStatus()
 	printKeys()
 	fmt.Printf("> ")
-	if _, ok := waitKey(keyWindow); ok {
-		// TODO(0.01 §5.3)：按键直接进 TUI 菜单。骨架阶段 TUI 尚未实现。
-		fmt.Fprintf(os.Stderr, "TUI 尚未实现：Go 版骨架阶段。\n")
-	}
-	fmt.Printf("\n")
-}
 
-// waitKey 在超时前读一个字节。stdin 不是终端（管道 / </dev/null）时立即返回。
-func waitKey(d time.Duration) (byte, bool) {
-	type res struct {
-		b  byte
-		ok bool
+	termInit()
+	defer termRestore()
+
+	key, ok, closed := readKey(keyWindow)
+	fmt.Printf("\n")
+	if closed {
+		return // stdin 已关：不空转，直接退出
 	}
-	ch := make(chan res, 1)
-	go func() {
-		buf := make([]byte, 1)
-		n, err := os.Stdin.Read(buf)
-		if err != nil || n == 0 {
-			ch <- res{0, false} // EOF / 读失败：立即返回，不白等
-			return
-		}
-		ch <- res{buf[0], true}
-	}()
-	select {
-	case r := <-ch:
-		return r.b, r.ok
-	case <-time.After(d):
-		return 0, false
+	if ok {
+		mainMenu(key)
 	}
 }
 
 // ---------- CLI 前端：配置类动作 ----------
 
-// cliNew 新建配置：sshtp n <说明> <本地ip:端口> <远程ip:端口> <user@host>
-// TODO(0.02 §5)：CLI 的 n 暂不接收方向；方向参数形式待定（0.02 §2.1 只要求能区分）。
+// cliNew 新建配置：sshtp n [L|R] <说明> <本地ip:端口> <远程ip:端口> <user@host>
+// 方向可省略，省略 = L（0.02 §2.1 要求配置与界面都能区分 L / R）。
 func cliNew(a []string) {
+	dir := "L"
+	if len(a) == 5 {
+		switch strings.ToUpper(a[0]) {
+		case "L":
+			dir = "L"
+		case "R":
+			dir = "R"
+		default:
+			die("方向只能是 L 或 R，收到：%s", a[0])
+		}
+		a = a[1:]
+	}
 	if len(a) != 4 {
 		fmt.Fprintf(os.Stderr, "参数不齐：需要 4 个（说明 本地ip:端口 远程ip:端口 user@host），收到 %d 个\n", len(a))
 		usage()
@@ -361,13 +364,8 @@ func cliNew(a []string) {
 	if rip == "" {
 		rip = "127.0.0.1"
 	}
-	t := Tunnel{Dir: "L", Desc: desc, Local: lip + ":" + lport, Rem: rip + ":" + rport, Login: c5}
-	lines := make([]string, 0, len(rows)+1)
-	for _, r := range rows {
-		lines = append(lines, r.Raw)
-	}
-	lines = append(lines, t.format())
-	if err := writeConf(lines); err != nil {
+	t := Tunnel{Dir: dir, Desc: desc, Local: lip + ":" + lport, Rem: rip + ":" + rport, Login: c5}
+	if err := appendConf(t); err != nil {
 		die("写入失败：%v", err)
 	}
 	fmt.Printf("已写入 %s\n", confPath())
@@ -384,21 +382,9 @@ func cliDel(a []string) {
 	if err != nil {
 		die("编号无效：%s", a[0])
 	}
-	rows, _ := listConf()
-	var target string
-	out := make([]string, 0, len(rows))
-	for _, r := range rows {
-		if r.No == n {
-			target = r.Raw
-			continue
-		}
-		out = append(out, r.Raw)
-	}
-	if target == "" {
+	target, err := deleteConfLine(n)
+	if err != nil {
 		die("没有第 %d 条配置", n)
-	}
-	if err := writeConf(out); err != nil {
-		die("删除失败：%v", err)
 	}
 	fmt.Printf("已删除第 %d 条：%s\n", n, target)
 }
@@ -417,9 +403,17 @@ func cliEdit(a []string) {
 	}
 	field, val := a[1], a[2]
 	switch field {
-	case "desc", "lip", "lport", "rip", "rport", "login", "ruser", "rhost":
+	case "dir", "desc", "lip", "lport", "rip", "rport", "login", "ruser", "rhost":
 	default:
-		die("未知字段：%s（可用：desc lip lport rip rport login ruser rhost）", field)
+		die("未知字段：%s（可用：dir desc lip lport rip rport login ruser rhost）", field)
+	}
+	if field == "dir" {
+		switch strings.ToUpper(val) {
+		case "L", "R":
+			val = strings.ToUpper(val)
+		default:
+			die("方向只能是 L 或 R，收到：%s", val)
+		}
 	}
 	if val == "" {
 		switch field {
@@ -457,6 +451,8 @@ func cliEdit(a []string) {
 			ruser, rhost = t.Login[:i], t.Login[i+1:]
 		}
 		switch field {
+		case "dir":
+			t.Dir = val
 		case "desc":
 			t.Desc = val
 		case "lip":
@@ -501,22 +497,59 @@ func cliEdit(a []string) {
 	fmt.Printf("已修改第 %d 条的 %s\n", n, field)
 }
 
-// cliConnect 连接：sshtp c <编号> —— 依赖隧道起停，待后续提交实现。
+// cliConnect 连接：sshtp c <编号>（编号 = 配置行号）。
 func cliConnect(a []string) {
 	if len(a) != 1 {
 		fmt.Fprintf(os.Stderr, "参数不齐：需要 1 个（编号）\n")
 		usage()
 		os.Exit(1)
 	}
-	die("连接尚未实现：Go 版骨架阶段")
+	n, err := strconv.Atoi(a[0])
+	if err != nil {
+		die("编号无效：%s", a[0])
+	}
+	if err := connectTunnel(n); err != nil {
+		die("%v", err)
+	}
 }
 
-// cliDisconnect 断开：sshtp d <编号> —— 依赖状态扫描，待后续提交实现。
+// cliDisconnect 断开：sshtp d <编号>。
+// 编号用**状态表编号**（会漂移），不是配置行号 —— 两套编号口径不同（0.01 §5.5）。
 func cliDisconnect(a []string) {
 	if len(a) != 1 {
 		fmt.Fprintf(os.Stderr, "参数不齐：需要 1 个（编号）\n")
 		usage()
 		os.Exit(1)
 	}
-	die("断开尚未实现：Go 版骨架阶段")
+	n, err := strconv.Atoi(a[0])
+	if err != nil {
+		die("编号无效：%s", a[0])
+	}
+	ls, err := scanTunnels()
+	if err != nil {
+		die("%v", err)
+	}
+	if n < 1 || n > len(ls) {
+		die("没有第 %d 项隧道", n)
+	}
+	if err := disconnectTunnel(ls[n-1].PID); err != nil {
+		die("%v", err)
+	}
+}
+
+// ---------- core：隧道起停（CLI 与 TUI 共用） ----------
+// TODO(0.01 §4.2 / §10.3)：起停尚未实现 —— 见下一个提交。
+// 这两个入口写一次，CLI 与 TUI 两边同时生效。
+
+// connectTunnel 连接第 n 条配置：后台起 ssh、记 pid、写日志（0.01 §4.2）。
+func connectTunnel(n int) error {
+	if _, ok := confByNo(n); !ok {
+		return fmt.Errorf("没有第 %d 条配置", n)
+	}
+	return fmt.Errorf("连接尚未实现（Go 版开发中）")
+}
+
+// disconnectTunnel 按 pid 断开隧道（含非本程序起的，0.01 §4.2）。
+func disconnectTunnel(pid int) error {
+	return fmt.Errorf("断开尚未实现（Go 版开发中）")
 }
