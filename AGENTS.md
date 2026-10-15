@@ -36,11 +36,22 @@
 8. **core 不含任何交互**：不 `clear`、不 `read`、不 `pause`。core 只写一次，
    CLI / TUI / HTTP 三个前端各接一次；`do_*` 那类交互函数绝不能被 CLI 走进（0.01 §10.8/§10.9）。
 
+## 命名（老板 2026-10-15 指定；优先于 `需求文档.0.01.md` §1 的文件命名部分）
+
+| 实现 | 文件名 |
+|---|---|
+| shell 版（mac / Linux） | `sshtp.sh` |
+| shell 版（Windows / pwsh） | `sshtp.ps1` |
+| 编译版（mac / Linux） | `sshtp` |
+| 编译版（Windows） | `sshtp.exe` |
+
+- **脚本一律带扩展名**（`.sh` / `.ps1`）；**编译产物按平台定扩展名**（Windows 带 `.exe`，其余不带）。
+- 程序名恒为 `sshtp`，文件名 = 程序名 + 平台扩展名。
+
 ## 代码约定
 
-- Go 版在 `go/` 子目录，module 名 `sshtp`；bash 版是仓库根的 `sshtp`。
-- **构建产物名固定为 `sshtp`**（需求文档.0.01 §1：程序名 `sshtp`，mac / Linux 不带扩展名；
-  Windows 侧至少有一个文件必须带扩展名）。Go 按**目录名**给产物命名，所以必须显式指定：
+- Go 版在 `go/` 子目录，module 名 `sshtp`。
+- 构建产物名按上表固定。Go 按**目录名**给产物命名，所以必须显式指定：
   - mac / Linux：`go build -o sshtp`
   - Windows：`go build -o sshtp.exe`
 - 平台差异用编译标签分文件：mac / Linux 走 `lsof` + `ps`，Windows 走系统 API 等价实现。
