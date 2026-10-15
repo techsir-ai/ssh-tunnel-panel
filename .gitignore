@@ -1,5 +1,5 @@
 # ---------- sshtp ----------
-# 入库的只有三样：程序 sshtp、需求文档.md、本文件。
+# 入库的是：bash 版程序 sshtp、Go 版 go/、需求文档、README、AGENTS.md、本文件、.gitattributes。
 # 以下都是本机运行时产物 / 本地配置 / 本地备份，不跨机同步。
 
 # 运行时临时文件：程序自己管理，最后一条隧道断开后自动删除（需doc §1 / §10.20）
@@ -19,3 +19,16 @@ sshtp.cfg
 
 # macOS
 .DS_Store
+
+# ---------- 0.02 运行时文件（不随分发，需doc.0.02 §4） ----------
+.tunnel.conf
+.sshtp.conf
+.sshtp.pid
+.sshtp.log
+
+# ---------- Go 版构建产物（不随分发） ----------
+# go 按目录名命名产物：直接在 go/ 里 go build 会得到名为 go / go.exe 的二进制
+/go/go
+/go/go.exe
+/go/sshtp
+/go/sshtp.exe

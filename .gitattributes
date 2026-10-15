@@ -1,0 +1,21 @@
+# 行尾统一 —— 文本文件一律 LF 入库、LF 检出。
+#
+# 目的：跨 Windows / macOS 保证同一份文件字节一致。本仓库是「bash 版 + Go 版」
+# 双实现且要求两版行为逐字节对齐，行尾漂移会直接破坏这种对齐
+# （bash 脚本带 CRLF 在 mac / Linux 上会因 shebang 变成 \r 而跑不起来）。
+#
+# 说明：本文件的规则优先于各机器的 core.autocrlf 本地设置，且随仓库分发——
+# 换机器、换 agent 都自动生效，不依赖任何人记得去配本地 git。
+
+* text=auto eol=lf
+
+# 二进制：不做任何行尾转换
+*.exe   binary
+*.msi   binary
+*.dll   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.gz    binary
+*.zip   binary
