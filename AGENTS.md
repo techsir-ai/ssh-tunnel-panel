@@ -39,6 +39,10 @@
 ## 代码约定
 
 - Go 版在 `go/` 子目录，module 名 `sshtp`；bash 版是仓库根的 `sshtp`。
+- **构建产物名固定为 `sshtp`**（需求文档.0.01 §1：程序名 `sshtp`，mac / Linux 不带扩展名；
+  Windows 侧至少有一个文件必须带扩展名）。Go 按**目录名**给产物命名，所以必须显式指定：
+  - mac / Linux：`go build -o sshtp`
+  - Windows：`go build -o sshtp.exe`
 - 平台差异用编译标签分文件：mac / Linux 走 `lsof` + `ps`，Windows 走系统 API 等价实现。
 - 目录层级尽量扁平；文件名只用字母、数字、连字符、点、中文，**不用下划线**。
 - Go 版提交前必须跑通 `go build` 与 `go vet`。
