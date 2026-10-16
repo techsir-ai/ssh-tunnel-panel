@@ -39,18 +39,6 @@ sshtp d <编号>                                                 # 断开
 
 配置文件名 `.tunnel.conf`（五列，含方向列）取代了旧的 `sshtp.cfg`（四列）。
 
-## 构建
-
-Go 版源码在 `go/`。产物名固定（规则见 [`需求文档.0.02.md`](需求文档.0.02.md) §1），构建时**必须显式指定产物名**，产物落在**项目根目录**：
-
-```sh
-cd go
-go build -o ../sshtp        # mac / Linux
-go build -o ../sshtp.exe    # Windows
-```
-
-Go 按**目录名**给产物命名——不加 `-o` 会得到一个名叫 `go` 的文件。
-
 ## 依赖
 
 `bash` / `ps` / `lsof` / `ssh`，macOS 与 Linux 自带，无需安装。
