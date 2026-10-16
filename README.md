@@ -11,6 +11,17 @@
 - **TUI / CLI 二合一** —— 同一套键位、同一个 core。人按键用 TUI，agent 带参数调 CLI，**不用学两套**
 - **参数化** —— 一个子命令一个动作、参数直接给；CLI 全程无交互、退出码语义化，可直接被脚本和 agent 调用
 
+## 下载
+
+到 [Releases](https://github.com/techsir-ai/ssh-tunnel-panel/releases) 下载对应平台的文件：
+
+| 平台 | 文件 |
+|---|---|
+| macOS / Linux | `sshtp` |
+| Windows | `sshtp.exe` |
+
+macOS / Linux 先 `chmod +x sshtp` 加执行权限，然后直接运行。**无需安装任何东西** —— 二进制是 Go 静态编译的，运行时只用系统自带的 `ssh` 等命令。
+
 ## 用法
 
 ```
@@ -41,11 +52,11 @@ sshtp d <编号>                                                 # 断开
 
 ## 依赖
 
-`bash` / `ps` / `lsof` / `ssh`，macOS 与 Linux 自带，无需安装。
+全部系统自带，无需安装：
 
-「通讯量」列另行取数：macOS 用 `nettop`，Linux 用 `ss`；取不到时该列记 `-`，不影响其余功能。
-
-Windows：shell 版不可行（`ps` 看不到原生 Windows 进程，且没有 `lsof`）。
+- **必需**：`ssh`
+- **状态扫描**：macOS / Linux 用 `ps` + `lsof`；Windows 用系统 API
+- **通讯量**（取不到则该列记 `-`，不影响其余功能）：macOS 用 `nettop`，Linux 用 `ss`，Windows 暂记 `-`
 
 ---
 
