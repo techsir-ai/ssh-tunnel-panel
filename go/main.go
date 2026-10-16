@@ -166,6 +166,7 @@ func showStatus() {
 	}
 
 	desc := confPortDesc()
+	traffic := trafficMap() // macOS 才有值；其余平台整列为 nil → 记 `-`（0.01 §8）
 	rows := make([][]string, 0, len(ls))
 	for i, t := range ls {
 		src := "外部"
@@ -176,10 +177,12 @@ func showStatus() {
 		if _, port := splitAddr(t.Local); desc[port] != "" {
 			d = desc[port]
 		}
-		// TODO(0.01 §10.14 / §8)：通讯量列。macOS 走 nettop（收发合计 ÷ 2），
-		// Linux / Windows 无等价数据源，一律记 "-"。
+		tr := "-"
+		if v := traffic[t.PID]; v != "" {
+			tr = v
+		}
 		rows = append(rows, []string{
-			strconv.Itoa(i + 1), t.Dir, t.Local, t.Rem, t.Host, t.Etime, "-", src, strconv.Itoa(t.PID), d,
+			strconv.Itoa(i + 1), t.Dir, t.Local, t.Rem, t.Host, t.Etime, tr, src, strconv.Itoa(t.PID), d,
 		})
 	}
 	printTable(statusHead, rows, statusAligns)
