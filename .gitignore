@@ -32,3 +32,6 @@ sshtp.cfg
 /go/go.exe
 /go/sshtp
 /go/sshtp.exe
+
+# 编辑器 / 构建留下的临时文件
+*~
