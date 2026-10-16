@@ -58,6 +58,9 @@
   - mac / Linux：`go build -o sshtp`
   - Windows：`go build -o sshtp.exe`
 - 平台差异用编译标签分文件：mac / Linux 走 `lsof` + `ps`，Windows 走系统 API 等价实现。
+- 通讯量取数按平台分文件：`traffic_darwin.go`（nettop，收发合计 ÷ 2）/ `traffic_linux.go`
+  （`ss -tinp` 的每连接字节，不必 ÷2）/ `traffic_other.go`（Windows 恒 `-`：WFP 的每连接字节
+  统计默认关闭，启用要管理员）。**拿不到就记 `-`，绝不用近似值冒充**。
 - 起停 / 日志 / pid 全在 `run.go`（core，无交互）；**平台差异只在 `run_unix.go` / `run_windows.go`**
   （怎么起得下、怎么停、怎么判存活）。连接失败原因文本只允许有一个出处：`connectFailReason`
   —— 日志与界面共用它（0.02 §7）。
