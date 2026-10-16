@@ -155,17 +155,18 @@ func confPortDesc() map[string]string {
 // showStatus 打印状态表（0.01 §5.2 的 9 列 + 0.02 §2.1 的方向列）。
 func showStatus() {
 	fmt.Printf("================ sshtp ================\n")
-	fmt.Printf("编号 | 方向 | 本地ip:端口 | 转发目标 | SSH主机 | 持续时间 | 通讯量 | 来源 | PID | 说明\n")
 
 	ls, err := scanTunnels()
 	if err != nil {
 		// 扫描失败必须报出来。绝不能印成空表 —— 那会被误读成「确实没有隧道」（0.01 §10.6）
+		printTable(statusHead, nil, statusAligns)
 		fmt.Printf("（扫描失败：%v）\n", err)
 		fmt.Printf("\n")
 		return
 	}
 
 	desc := confPortDesc()
+	rows := make([][]string, 0, len(ls))
 	for i, t := range ls {
 		src := "外部"
 		if isManaged(t.PID) {
@@ -177,10 +178,12 @@ func showStatus() {
 		}
 		// TODO(0.01 §10.14 / §8)：通讯量列。macOS 走 nettop（收发合计 ÷ 2），
 		// Linux / Windows 无等价数据源，一律记 "-"。
-		fmt.Printf("%d | %s | %s | %s | %s | %s | %s | %s | %d | %s\n",
-			i+1, t.Dir, t.Local, t.Rem, t.Host, t.Etime, "-", src, t.PID, d)
+		rows = append(rows, []string{
+			strconv.Itoa(i + 1), t.Dir, t.Local, t.Rem, t.Host, t.Etime, "-", src, strconv.Itoa(t.PID), d,
+		})
 	}
-	if len(ls) == 0 {
+	printTable(statusHead, rows, statusAligns)
+	if len(rows) == 0 {
 		fmt.Printf("（没有检测到隧道）\n")
 	}
 	fmt.Printf("\n")
@@ -189,25 +192,37 @@ func showStatus() {
 // showConfig 打印配置表（编号 | 方向 | 本地 | 转发目标 | SSH主机 | 说明 | 状态）。
 func showConfig() {
 	fmt.Printf("================ 配置 ================\n")
-	fmt.Printf("编号 | 方向 | 本地ip:端口 | 转发目标 | SSH主机 | 说明 | 状态\n")
 	rows, err := listConf()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "读取配置失败：%v\n", err)
 		return
 	}
-	any := false
+
+	// 每条标注当前是否已在运行（0.01 §4.1）：`未运行` / `已运行 pid xxx`。
+	// 只扫一次 —— Windows 上一次扫描要一秒上下，逐行扫会卡死。
+	running := map[string]int{} // 本地端口 → 已在跑的 pid
+	if ls, err := scanTunnels(); err == nil {
+		for _, t := range ls {
+			if _, p := splitAddr(t.Local); running[p] == 0 {
+				running[p] = t.PID
+			}
+		}
+	}
+
+	out := make([][]string, 0, len(rows))
 	for _, r := range rows {
 		t, ok := parseLine(r.Raw)
 		if !ok {
 			continue // 无效行：跳过（但仍占行序号）
 		}
-		any = true
-		// TODO(0.01 §5.2 / 0.02 §2)：这里要判断该本地端口是否已在运行，
-		// 已运行输出「已运行 pid N」，否则「未运行」——依赖扫描实现。
 		st := "未运行"
-		fmt.Printf("%d | %s | %s | %s | %s | %s | %s\n", r.No, t.Dir, t.Local, t.Rem, t.Login, t.Desc, st)
+		if _, p := splitAddr(t.Local); running[p] != 0 {
+			st = fmt.Sprintf("已运行 pid %d", running[p])
+		}
+		out = append(out, []string{strconv.Itoa(r.No), t.Dir, t.Local, t.Rem, t.Login, t.Desc, st})
 	}
-	if !any {
+	printTable(configHead, out, configAligns)
+	if len(out) == 0 {
 		fmt.Printf("（配置里还没有隧道）\n")
 	}
 	fmt.Printf("\n")
