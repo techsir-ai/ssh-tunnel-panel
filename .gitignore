@@ -27,7 +27,10 @@ sshtp.cfg
 .sshtp.log
 
 # ---------- Go 版构建产物（不随分发） ----------
-# go 按目录名命名产物：直接在 go/ 里 go build 会得到名为 go / go.exe 的二进制
+# 产物落在项目根目录（mac / Linux：sshtp；Windows：sshtp.exe）
+/sshtp
+/sshtp.exe
+# 兜底：万一在 go/ 里就地构建（Go 按目录名命名，会得到 go / go.exe）
 /go/go
 /go/go.exe
 /go/sshtp
