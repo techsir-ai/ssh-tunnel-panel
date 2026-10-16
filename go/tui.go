@@ -1,4 +1,4 @@
-// TUI 前端 —— 交互（清屏 / 读键 / 暂停）。
+// TUI 前端 —— 交互（清屏 / 读键 / 提问）。
 //
 // 与 0.01 §5.3 / §5.4 对齐：
 //   - 整屏重绘（清屏 + 重印），不移动光标、不做局部刷新
@@ -8,85 +8,15 @@
 //
 // 键位与 CLI 完全一致：同一个键，TUI 里是「交互 → 执行」，CLI 里是「一次性执行 → 退出」，
 // 差的只是这个 while 循环。
+//
+// 输入细节（行尾、回显、全角字符、非法输入）全部收在 input.go，这里只负责问什么、怎么问。
 package main
 
 import (
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
-
-// ---------- 读键 ----------
-
-var (
-	keyCh     = make(chan byte, 8)
-	keyReader sync.Once
-)
-
-// startKeyReader 起**唯一**一个读 stdin 的协程，只起一次。
-// 不能每次读键都开一个协程：那样每个超时周期都会留下一个永久阻塞在 Read 上的协程。
-func startKeyReader() {
-	keyReader.Do(func() {
-		go func() {
-			buf := make([]byte, 1)
-			for {
-				n, err := os.Stdin.Read(buf)
-				if err != nil || n == 0 {
-					close(keyCh) // stdin 关了（终端消失 / 管道结束）
-					return
-				}
-				keyCh <- buf[0]
-			}
-		}()
-	})
-}
-
-// readKey 读一个字符（不回显、不必回车 —— 依赖 termInit 关掉行缓冲）。
-//   - 超时没键：ok=false
-//   - stdin 已关：closed=true，调用方据此退出，避免空转（0.01 §10.12）
-func readKey(timeout time.Duration) (b byte, ok bool, closed bool) {
-	startKeyReader()
-	select {
-	case v, more := <-keyCh:
-		if !more {
-			return 0, false, true
-		}
-		return v, true, false
-	case <-time.After(timeout):
-		return 0, false, false
-	}
-}
-
-// pauseKey 等一个键再返回。子流程结束、或出错需要让人看清时用。
-func pauseKey() {
-	fmt.Print("\n按任意键返回...")
-	startKeyReader()
-	<-keyCh
-}
-
-// readLine 读一行（逐行提问用）。读取期间临时恢复行输入模式，
-// 让终端自己处理回显与退格；读完马上回到单键模式。
-func readLine() string {
-	startKeyReader()
-	termCooked()
-	defer termRaw()
-	var out []byte
-	for v := range keyCh {
-		if v == '\n' {
-			break
-		}
-		if v == '\r' {
-			continue
-		}
-		out = append(out, v)
-	}
-	return string(out)
-}
-
-func clr() { clearScreen() }
 
 // ---------- 菜单 ----------
 
@@ -116,25 +46,60 @@ func mainMenu(preset byte) {
 			key = k
 		}
 
-		switch key {
-		case 'r', 'R':
+		switch normKey(key) {
+		case 'r':
 			// 刷新 = 重绘（每轮循环本就整屏重绘）；把它显式写进键位表是给人一个明确的动作
-		case 'v', 'V':
+		case 'v':
 			doView()
-		case 'n', 'N':
+		case 'n':
 			doNew()
-		case 'e', 'E':
+		case 'e':
 			doEdit()
-		case 'x', 'X':
+		case 'x':
 			doDel()
-		case 'c', 'C':
+		case 'c':
 			doConnect()
-		case 'd', 'D':
+		case 'd':
 			doDisconnect()
-		case 'q', 'Q':
+		case 'q':
 			return
 		}
 	}
+}
+
+// normKey 把按键归一化：大写折小写，全角折半角（中文输入法常给全角）。
+// 其余按键返回 0（不会匹配任何 case，等于重绘）。
+func normKey(b byte) byte {
+	switch {
+	case b >= 'A' && b <= 'Z':
+		return b - 'A' + 'a'
+	case b >= 0x80: // 可能是全角字符 / 汉字的首字节：补全后归一化
+		s := append([]byte{b}, readContinuation()...)
+		n := normalizeASCII(string(s))
+		if len(n) == 1 && n[0] < 0x80 {
+			return normKey(n[0]) // 只归一化成一个 ASCII 字节时才递归，不会死循环
+		}
+		return 0
+	}
+	return b
+}
+
+// readContinuation 补读 UTF-8 后续字节（不等待：终端通常一次给全）。
+// 只看不动：遇到非后续字节就收手，绝不打乱输入次序。
+func readContinuation() []byte {
+	var out []byte
+	for i := 0; i < 3; i++ {
+		nb, ok := peekKey(10 * time.Millisecond)
+		if !ok {
+			break
+		}
+		if nb < 0x80 || nb > 0xBF {
+			break
+		}
+		out = append(out, nb)
+		pushback = pushback[1:]
+	}
+	return out
 }
 
 // ---------- 动作内的选择列表（不算二级菜单，0.01 §5.3） ----------
@@ -157,122 +122,124 @@ func printConfList() map[int]bool {
 // ---------- 六个动作 ----------
 
 func doView() {
+	skipLeadingNewlines()
 	clr()
 	showConfig()
 	pauseKey()
 }
 
 func doNew() {
+	skipLeadingNewlines() // 菜单上那一下回车可能残留 CR/LF，先排掉，免得替用户答掉第一问（别的按键保留）
 	clr()
 	fmt.Printf("新建（逐项输入；此行只写配置，不自动连接）\n\n")
 
-	// 方向（0.02 §2.1：配置与界面都要能区分 L / R）
+	// 1) 方向（0.02 §2.1：配置与界面都要能区分 L / R）—— 单键即选，回车取默认
 	fmt.Printf(" 1) 方向\n")
 	fmt.Printf("    [1] L  本地转发（本机监听 → 转发到远端）  ← 默认\n")
 	fmt.Printf("    [2] R  反向转发（远端监听 → 转发到本机）\n")
-	fmt.Printf("    > ")
-	dir := "L"
-	switch strings.TrimSpace(readLine()) {
-	case "", "1":
-		dir = "L"
-	case "2":
-		dir = "R"
-	default:
-		fmt.Printf("\n请输入 1 或 2。\n")
-		pauseKey()
+	ans, eof := askChoice("[1] L（默认） / [2] R", "", "1", "2")
+	if eof {
 		return
+	}
+	dir := "L"
+	if ans == "2" {
+		dir = "R"
 	}
 
 	rows, _ := listConf()
 	def := fmt.Sprintf("%02d", len(rows)+1)
 	fmt.Printf("\n 2) 说明 —— 这条隧道的备注。任意文本、可含空格；不能含逗号（逗号是列分隔符）\n")
 	fmt.Printf("    留空则自动使用序号：%s\n", def)
-	fmt.Printf("    > ")
-	desc := strings.TrimSpace(readLine())
+	desc, eof := askPrompt("    > ")
+	if eof {
+		return
+	}
 	if desc == "" {
 		desc = def
 	}
 
 	fmt.Printf("\n 3) 本地 IP —— 本机监听地址，如 127.0.0.1 或 192.168.10.100\n")
 	fmt.Printf("    留空记 127.0.0.1\n")
-	fmt.Printf("    > ")
-	lip := strings.TrimSpace(readLine())
+	lip, eof := askPromptASCII("    > ")
+	if eof {
+		return
+	}
 	if lip == "" {
 		lip = "127.0.0.1"
 	}
 
-	fmt.Printf("\n 4) 本地端口 —— 本机监听端口，如 3081（必填）\n")
-	fmt.Printf("    > ")
-	lport := strings.TrimSpace(readLine())
-	if !isPort(lport) {
-		fmt.Printf("\n本地端口必须是 1-65535 的数字。\n")
-		pauseKey()
+	lport, eof := askPort("\n 4) 本地端口 —— 本机监听端口，如 3081（必填）\n", "    > ", false)
+	if eof {
 		return
 	}
 
 	fmt.Printf("\n 5) 远程 IP —— 从远端视角解析，如 127.0.0.1 或 10.0.0.5\n")
 	fmt.Printf("    留空记 127.0.0.1\n")
-	fmt.Printf("    > ")
-	rip := strings.TrimSpace(readLine())
+	rip, eof := askPromptASCII("    > ")
+	if eof {
+		return
+	}
 	if rip == "" {
 		rip = "127.0.0.1"
 	}
 
-	fmt.Printf("\n 6) 远程端口 —— 目标端口，如 3080（留空 = 取本地端口）\n")
-	fmt.Printf("    > ")
-	rport := strings.TrimSpace(readLine())
+	rport, eof := askPort("\n 6) 远程端口 —— 目标端口，如 3080（留空 = 取本地端口）\n", "    > ", true)
+	if eof {
+		return
+	}
 	if rport == "" {
 		rport = lport // 0.02 §2.2
-	}
-	if !isPort(rport) {
-		fmt.Printf("\n远程端口必须是 1-65535 的数字。\n")
-		pauseKey()
-		return
 	}
 
 	fmt.Printf("\n 7) 远程登录方式\n")
 	fmt.Printf("    [1] user@host     显式指定用户名，如 changwei@x1c\n")
 	fmt.Printf("    [2] config 名称    走 ~/.ssh/config，不写用户名，如 x1c\n")
-	fmt.Printf("    > ")
-	mode := strings.TrimSpace(readLine())
+	mode, eof := askChoice("[1] user@host / [2] config 名称", "1", "2")
+	if eof {
+		return
+	}
 
 	var login string
-	switch mode {
-	case "1":
-		fmt.Printf("\n 8) 用户名@主机（必填）\n    > ")
-		login = strings.TrimSpace(readLine())
-		if login == "" {
-			fmt.Printf("\n不能为空。\n")
-			pauseKey()
-			return
+	if mode == "1" {
+		fmt.Printf("\n 8) 用户名@主机\n")
+		for {
+			v, e := askPromptASCII("    > ")
+			if e {
+				return
+			}
+			if v == "" {
+				fmt.Printf("    不能为空。\n")
+				continue
+			}
+			if !strings.Contains(v, "@") {
+				fmt.Printf("    这种方式要写成 用户名@主机，如 changwei@x1c。\n")
+				continue
+			}
+			if strings.HasPrefix(v, "@") || strings.HasSuffix(v, "@") {
+				fmt.Printf("    用户名和主机都不能为空。\n")
+				continue
+			}
+			login = v
+			break
 		}
-		if !strings.Contains(login, "@") {
-			fmt.Printf("\n这种方式要写成 用户名@主机，如 changwei@x1c。\n")
-			pauseKey()
-			return
+	} else {
+		fmt.Printf("\n 8) config 名称 —— ~/.ssh/config 里的 Host 别名\n")
+		for {
+			v, e := askPromptASCII("    > ")
+			if e {
+				return
+			}
+			if v == "" {
+				fmt.Printf("    config 名称不能为空。\n")
+				continue
+			}
+			if strings.Contains(v, "@") {
+				fmt.Printf("    这种方式不应含 @；要指定用户名请回上一步选 [1]。\n")
+				continue
+			}
+			login = v
+			break
 		}
-		if strings.HasPrefix(login, "@") || strings.HasSuffix(login, "@") {
-			fmt.Printf("\n用户名和主机都不能为空。\n")
-			pauseKey()
-			return
-		}
-	case "2":
-		fmt.Printf("\n 8) config 名称 —— ~/.ssh/config 里的 Host 别名（必填）\n    > ")
-		login = strings.TrimSpace(readLine())
-		if login == "" {
-			fmt.Printf("\nconfig 名称不能为空。\n")
-			pauseKey()
-			return
-		}
-		if strings.Contains(login, "@") {
-			fmt.Printf("\n这种方式不应含 @；要指定用户名请回上一步选 [1]。\n")
-			pauseKey()
-			return
-		}
-	default:
-		fmt.Printf("\n请输入 1 或 2。\n")
-		pauseKey()
-		return
 	}
 
 	t := Tunnel{Dir: dir, Desc: desc, Local: lip + ":" + lport, Rem: rip + ":" + rport, Login: login}
@@ -293,6 +260,7 @@ func doNew() {
 }
 
 func doEdit() {
+	skipLeadingNewlines()
 	clr()
 	fmt.Printf("修改配置（编号 = 配置文件行序号）\n\n")
 	avail := printConfList()
@@ -302,8 +270,10 @@ func doEdit() {
 		return
 	}
 
-	fmt.Printf("\n输入要修改的编号（直接回车取消）: ")
-	n, ok := atoiOK(readLine())
+	n, ok, eof := askInt("\n输入要修改的编号（直接回车取消）: ")
+	if eof {
+		return
+	}
 	if !ok {
 		return
 	}
@@ -324,99 +294,120 @@ func doEdit() {
 	fmt.Printf(" 6) 远程端口    = %s\n", portOf(t.Rem))
 	fmt.Printf(" 7) 远程登录    = %s\n", t.Login)
 
-	fmt.Printf("\n输入要改的字段号 1-7（直接回车取消）: ")
-	fno, ok := atoiOK(readLine())
-	if !ok {
+	fno, eof := askChoice(
+		"[1] 方向 [2] 说明 [3] 本地IP [4] 本地端口 [5] 远程IP [6] 远程端口 [7] 远程登录（回车取消）",
+		"", "1", "2", "3", "4", "5", "6", "7")
+	if eof {
+		return
+	}
+	if fno == "" {
 		return
 	}
 
 	nt := t
 	switch fno {
-	case 1:
-		fmt.Printf("\n 新的方向 [1] L  [2] R（直接回车取消）: ")
-		switch strings.TrimSpace(readLine()) {
+	case "1":
+		fmt.Printf("\n 新的方向\n")
+		fmt.Printf("    [1] L  [2] R\n")
+		ans, e := askChoice("[1] L / [2] R（回车取消）", "", "1", "2")
+		if e {
+			return
+		}
+		switch ans {
 		case "":
 			return
 		case "1":
 			nt.Dir = "L"
 		case "2":
 			nt.Dir = "R"
-		default:
-			fmt.Printf("\n请输入 1 或 2。\n")
-			pauseKey()
-			return
 		}
-	case 2, 3, 4, 5, 6:
-		name := map[int]string{2: "说明", 3: "本地 IP", 4: "本地端口", 5: "远程 IP", 6: "远程端口"}[fno]
-		fmt.Printf("\n新的%s（直接回车取消）: ", name)
-		val := strings.TrimSpace(readLine())
-		if val == "" {
-			return
-		}
-		if strings.Contains(val, ",") {
-			fmt.Printf("\n新值不能含逗号（逗号是列分隔符）。\n")
-			pauseKey()
-			return
+	case "2", "3", "4", "5", "6":
+		name := map[string]string{"2": "说明", "3": "本地 IP", "4": "本地端口", "5": "远程 IP", "6": "远程端口"}[fno]
+		ascii := fno != "2" // 只有「说明」保留中文原样
+		var val string
+		for {
+			fmt.Printf("\n新的%s（直接回车取消）\n", name)
+			var v string
+			var e bool
+			if ascii {
+				v, e = askPromptASCII("    > ")
+			} else {
+				v, e = askPrompt("    > ")
+			}
+			if e {
+				return
+			}
+			if v == "" {
+				return
+			}
+			if strings.Contains(v, ",") {
+				fmt.Printf("    新值不能含逗号（逗号是列分隔符）。\n")
+				continue
+			}
+			if (fno == "4" || fno == "6") && !isPort(v) {
+				fmt.Printf("    端口必须是 1-65535 的数字（收到「%s」）。\n", describeInput(v))
+				continue
+			}
+			val = v
+			break
 		}
 		switch fno {
-		case 2:
+		case "2":
 			nt.Desc = val
-		case 3:
+		case "3":
 			nt.Local = val + ":" + portOf(t.Local)
-		case 4:
-			if !isPort(val) {
-				fmt.Printf("\n端口必须是 1-65535 的数字。\n")
-				pauseKey()
-				return
-			}
+		case "4":
 			nt.Local = ipOf(t.Local) + ":" + val
-		case 5:
+		case "5":
 			nt.Rem = val + ":" + portOf(t.Rem)
-		case 6:
-			if !isPort(val) {
-				fmt.Printf("\n端口必须是 1-65535 的数字。\n")
-				pauseKey()
-				return
-			}
+		case "6":
 			nt.Rem = ipOf(t.Rem) + ":" + val
 		}
-	case 7:
+	case "7":
 		fmt.Printf("\n 新的远程登录方式\n")
-		fmt.Printf("    [1] user@host   [2] config 名称\n    > ")
-		switch strings.TrimSpace(readLine()) {
-		case "1":
-			fmt.Printf("    用户名@主机（直接回车取消）: ")
-			val := strings.TrimSpace(readLine())
-			if val == "" {
-				return
-			}
-			if !strings.Contains(val, "@") || strings.HasPrefix(val, "@") || strings.HasSuffix(val, "@") {
-				fmt.Printf("\n要写成 用户名@主机，且两侧都不能为空。\n")
-				pauseKey()
-				return
-			}
-			nt.Login = val
-		case "2":
-			fmt.Printf("    config 名称（直接回车取消）: ")
-			val := strings.TrimSpace(readLine())
-			if val == "" {
-				return
-			}
-			if strings.Contains(val, "@") {
-				fmt.Printf("\n这种方式不应含 @；要指定用户名请选 [1]。\n")
-				pauseKey()
-				return
-			}
-			nt.Login = val
-		default:
-			fmt.Printf("\n请输入 1 或 2。\n")
-			pauseKey()
+		fmt.Printf("    [1] user@host   [2] config 名称\n")
+		ans, e := askChoice("[1] user@host / [2] config 名称（回车取消）", "", "1", "2")
+		if e {
 			return
 		}
-	default:
-		fmt.Printf("\n没有 %d 号字段。\n", fno)
-		pauseKey()
-		return
+		switch ans {
+		case "":
+			return
+		case "1":
+			fmt.Printf("    用户名@主机\n")
+			for {
+				v, e := askPromptASCII("    > ")
+				if e {
+					return
+				}
+				if v == "" {
+					return
+				}
+				if !strings.Contains(v, "@") || strings.HasPrefix(v, "@") || strings.HasSuffix(v, "@") {
+					fmt.Printf("    要写成 用户名@主机，且两侧都不能为空。\n")
+					continue
+				}
+				nt.Login = v
+				break
+			}
+		case "2":
+			fmt.Printf("    config 名称\n")
+			for {
+				v, e := askPromptASCII("    > ")
+				if e {
+					return
+				}
+				if v == "" {
+					return
+				}
+				if strings.Contains(v, "@") {
+					fmt.Printf("    这种方式不应含 @；要指定用户名请选 [1]。\n")
+					continue
+				}
+				nt.Login = v
+				break
+			}
+		}
 	}
 
 	if err := replaceConfLine(n, nt.format()); err != nil {
@@ -428,6 +419,7 @@ func doEdit() {
 }
 
 func doDel() {
+	skipLeadingNewlines()
 	clr()
 	fmt.Printf("删除配置（编号 = 配置文件行序号；只删配置，不断隧道）\n\n")
 	avail := printConfList()
@@ -437,8 +429,10 @@ func doDel() {
 		return
 	}
 
-	fmt.Printf("\n输入要删除的编号（直接回车取消）: ")
-	n, ok := atoiOK(readLine())
+	n, ok, eof := askInt("\n输入要删除的编号（直接回车取消）: ")
+	if eof {
+		return
+	}
 	if !ok {
 		return
 	}
@@ -457,6 +451,7 @@ func doDel() {
 }
 
 func doConnect() {
+	skipLeadingNewlines()
 	clr()
 	fmt.Printf("连接隧道（编号 = 配置文件行序号）\n\n")
 	avail := printConfList()
@@ -466,8 +461,10 @@ func doConnect() {
 		return
 	}
 
-	fmt.Printf("\n输入序号连接（直接回车取消）: ")
-	n, ok := atoiOK(readLine())
+	n, ok, eof := askInt("\n输入序号连接（直接回车取消）: ")
+	if eof {
+		return
+	}
 	if !ok {
 		return
 	}
@@ -484,6 +481,7 @@ func doConnect() {
 }
 
 func doDisconnect() {
+	skipLeadingNewlines()
 	clr()
 	fmt.Printf("断开隧道（编号 = 现有隧道，含外部）\n\n")
 	ls, err := scanTunnels()
@@ -506,8 +504,10 @@ func doDisconnect() {
 		return
 	}
 
-	fmt.Printf("\n输入编号断开（直接回车取消）: ")
-	n, ok := atoiOK(readLine())
+	n, ok, eof := askInt("\n输入编号断开（直接回车取消）: ")
+	if eof {
+		return
+	}
 	if !ok {
 		return
 	}
@@ -523,20 +523,19 @@ func doDisconnect() {
 	pauseKey()
 }
 
-// ---------- 小工具 ----------
+func clr() { clearScreen() }
 
-// atoiOK 解析编号；空输入视为取消（ok=false）。
-func atoiOK(s string) (int, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, false
+// pauseKey 等一个键再返回。子流程结束、或出错需要让人看清时用。
+func pauseKey() {
+	fmt.Print("\n按任意键返回...")
+	if _, closed := waitKey(); closed {
+		fmt.Print("\n")
+		return
 	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return 0, false
-	}
-	return n, true
+	fmt.Print("\n")
 }
+
+// ---------- 小工具 ----------
 
 func ipOf(addr string) string   { ip, _ := splitAddr(addr); return ip }
 func portOf(addr string) string { _, p := splitAddr(addr); return p }

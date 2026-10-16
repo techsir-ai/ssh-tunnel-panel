@@ -300,10 +300,16 @@ func main() {
 func noArgs() {
 	showStatus()
 	printKeys()
-	fmt.Printf("> ")
 
 	termInit()
 	defer termRestore()
+
+	// 终端不给关行缓冲时（罕见，但确实有），按键就得再敲回车 —— 如实说明，
+	// 别让用户对着屏幕猜是不是程序坏了。
+	if isTerminal() && !singleKeyOK() {
+		fmt.Printf("（提示：此终端不支持单键读取，按键后请再按一次回车）\n")
+	}
+	fmt.Printf("> ")
 
 	key, ok, closed := readKey(keyWindow)
 	fmt.Printf("\n")
