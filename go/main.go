@@ -21,7 +21,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -47,15 +46,6 @@ type Tunnel struct {
 	Local string // 列3 本地 ip:端口 —— 永远指本机
 	Rem   string // 列4 远程 ip:端口 —— 永远指远端
 	Login string // 列5 user@host（带 @ 显式用户名）或 host（走 ~/.ssh/config）
-}
-
-// confPath 返回配置文件路径。程序与本文件同目录、扁平放置（0.01 §1）。
-func confPath() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return confName
-	}
-	return filepath.Join(filepath.Dir(exe), confName)
 }
 
 // splitAddr 拆 ip:端口。只有端口时 ip 记 127.0.0.1（对齐 bash addr_ip/addr_port）。
@@ -131,9 +121,6 @@ func writeConf(lines []string) error {
 }
 
 // ---------- 两个视图（纯输出，TUI 与 CLI 共用同一份） ----------
-
-// pidPath 返回 pid 记录文件路径（与本程序同目录、扁平）。
-func pidPath() string { return filepath.Join(filepath.Dir(confPath()), pidName) }
 
 // isManaged 判断某 pid 是不是本程序起的（0.01 §10.20：pid 文件的唯一用途就是这一列）。
 func isManaged(pid int) bool {
@@ -543,19 +530,3 @@ func cliDisconnect(a []string) {
 	}
 }
 
-// ---------- core：隧道起停（CLI 与 TUI 共用） ----------
-// TODO(0.01 §4.2 / §10.3)：起停尚未实现 —— 见下一个提交。
-// 这两个入口写一次，CLI 与 TUI 两边同时生效。
-
-// connectTunnel 连接第 n 条配置：后台起 ssh、记 pid、写日志（0.01 §4.2）。
-func connectTunnel(n int) error {
-	if _, ok := confByNo(n); !ok {
-		return fmt.Errorf("没有第 %d 条配置", n)
-	}
-	return fmt.Errorf("连接尚未实现（Go 版开发中）")
-}
-
-// disconnectTunnel 按 pid 断开隧道（含非本程序起的，0.01 §4.2）。
-func disconnectTunnel(pid int) error {
-	return fmt.Errorf("断开尚未实现（Go 版开发中）")
-}

@@ -58,6 +58,9 @@
   - mac / Linux：`go build -o sshtp`
   - Windows：`go build -o sshtp.exe`
 - 平台差异用编译标签分文件：mac / Linux 走 `lsof` + `ps`，Windows 走系统 API 等价实现。
+- 起停 / 日志 / pid 全在 `run.go`（core，无交互）；**平台差异只在 `run_unix.go` / `run_windows.go`**
+  （怎么起得下、怎么停、怎么判存活）。连接失败原因文本只允许有一个出处：`connectFailReason`
+  —— 日志与界面共用它（0.02 §7）。
 - 目录层级尽量扁平；文件名只用字母、数字、连字符、点、中文，**不用下划线**。
 - Go 版提交前必须跑通 `go build` 与 `go vet`；改动 TUI / 输入层后还要跑 `go test ./...`。
 - **TUI 的输入只走 `go/input.go` 一个入口**：全程单键模式，行内编辑（回显、退格）由本程序自己做；
